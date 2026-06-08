@@ -1,0 +1,44 @@
+================  TENOR 1M  (N=21 bdays)  ================                                                                                   
+observations (aligned):            4,515
+rho_imp   mean/median:             -0.400 / -0.400
+rho_imp   min/max:                 -0.550 / -0.250
+rho_imp   out-of-bounds fraction:  0.000%
+recon error |rho_real - rho_tri|:  0.0000
+----------------------------------------------------------------------
+spread = rho_imp - rho_real_fwd
+  overlapping   mean / HAC t:      -0.1045 / -9.35  (n=4,515)
+  non-overlap   mean / HAC t:      -0.1053 / -8.65  (n=215)
+----------------------------------------------------------------------
+regime (mean spread by base1-impvol tercile):
+    low_vol    -0.0890
+    mid_vol    -0.1191
+    high_vol   -0.1055
+sub-period sign consistency:       5/5
+  sub-period means: -0.133, -0.111, -0.115, -0.122, -0.041
+
+================  TENOR 3M  (N=63 bdays)  ================
+observations (aligned):            4,473
+rho_imp   mean/median:             -0.400 / -0.400
+rho_imp   min/max:                 -0.550 / -0.250
+rho_imp   out-of-bounds fraction:  0.000%
+recon error |rho_real - rho_tri|:  0.0000
+----------------------------------------------------------------------
+spread = rho_imp - rho_real_fwd
+  overlapping   mean / HAC t:      -0.0979 / -8.63  (n=4,473)
+  non-overlap   mean / HAC t:      -0.0979 / -7.66  (n=71)
+----------------------------------------------------------------------
+regime (mean spread by base1-impvol tercile):
+    low_vol    -0.0960
+    mid_vol    -0.1095
+    high_vol   -0.0882
+sub-period sign consistency:       5/5
+  sub-period means: -0.129, -0.106, -0.108, -0.119, -0.027
+
+======================================================================
+GO / NO-GO:  >>> GO <<<
+All gate criteria satisfied.
+======================================================================
+
+Reminder: a GO here only confirms a clean, signed, stable premium in ATM
+data. It does NOT confirm tradability. Step 2 must test whether the spread
+survives the ATM-vs-smile artifact and is not pure crash-risk compensation.

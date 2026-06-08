@@ -1,42 +1,49 @@
-================  TENOR 1M  (N=21 bdays)  ================                                                                                   
-observations (aligned):            4,515
-rho_imp   mean/median:             -0.400 / -0.400
-rho_imp   min/max:                 -0.550 / -0.250
+
+================  TENOR 1M  (N=21 bdays)  ================
+observations (aligned):            4,676
+rho_imp   mean/median:             -0.346 / -0.376
+rho_imp   min/max:                 -0.696 / +0.359
 rho_imp   out-of-bounds fraction:  0.000%
-recon error |rho_real - rho_tri|:  0.0000
+recon error |rho_real - rho_tri|:  0.0112
 ----------------------------------------------------------------------
 spread = rho_imp - rho_real_fwd
-  overlapping   mean / HAC t:      -0.1045 / -9.35  (n=4,515)
-  non-overlap   mean / HAC t:      -0.1053 / -8.65  (n=215)
+  overlapping   mean / HAC t:      -0.0124 / -0.78  (n=4,676)
+  non-overlap   mean / HAC t:      -0.0123 / -0.67  (n=223)
 ----------------------------------------------------------------------
 regime (mean spread by base1-impvol tercile):
-    low_vol    -0.0890
-    mid_vol    -0.1191
-    high_vol   -0.1055
-sub-period sign consistency:       5/5
-  sub-period means: -0.133, -0.111, -0.115, -0.122, -0.041
+    low_vol    -0.0105
+    mid_vol    +0.0051
+    high_vol   -0.0320
+sub-period sign consistency:       2/5
+  sub-period means: -0.085, -0.064, +0.066, +0.005, +0.017
 
 ================  TENOR 3M  (N=63 bdays)  ================
-observations (aligned):            4,473
-rho_imp   mean/median:             -0.400 / -0.400
-rho_imp   min/max:                 -0.550 / -0.250
+observations (aligned):            4,634
+rho_imp   mean/median:             -0.333 / -0.357
+rho_imp   min/max:                 -0.625 / +0.243
 rho_imp   out-of-bounds fraction:  0.000%
-recon error |rho_real - rho_tri|:  0.0000
+recon error |rho_real - rho_tri|:  0.0067
 ----------------------------------------------------------------------
 spread = rho_imp - rho_real_fwd
-  overlapping   mean / HAC t:      -0.0979 / -8.63  (n=4,473)
-  non-overlap   mean / HAC t:      -0.0979 / -7.66  (n=71)
+  overlapping   mean / HAC t:      -0.0048 / -0.21  (n=4,634)
+  non-overlap   mean / HAC t:      -0.0047 / -0.18  (n=74)
 ----------------------------------------------------------------------
 regime (mean spread by base1-impvol tercile):
-    low_vol    -0.0960
-    mid_vol    -0.1095
-    high_vol   -0.0882
-sub-period sign consistency:       5/5
-  sub-period means: -0.129, -0.106, -0.108, -0.119, -0.027
+    low_vol    +0.0125
+    mid_vol    +0.0115
+    high_vol   -0.0385
+sub-period sign consistency:       2/5
+  sub-period means: -0.127, -0.055, +0.083, +0.025, +0.050
 
 ======================================================================
-GO / NO-GO:  >>> GO <<<
-All gate criteria satisfied.
+GO / NO-GO:  >>> NO-GO / REWORK <<<
+Flags:
+  - [1M] |mean spread| 0.012 < 0.05.
+  - [1M] HAC |t| 0.78 < 3.0.
+  - [1M] sign consistent in only 2/5 sub-periods.
+  - [3M] |mean spread| 0.005 < 0.05.
+  - [3M] HAC |t| 0.21 < 3.0.
+  - [3M] sign consistent in only 2/5 sub-periods.
 ======================================================================
 
 Reminder: a GO here only confirms a clean, signed, stable premium in ATM

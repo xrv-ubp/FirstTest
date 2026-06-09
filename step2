@@ -1,0 +1,7 @@
+  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 346, in main
+    df = fetch_bloomberg(tenor, args.start, args.end, has10)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 267, in fetch_bloomberg
+    raw.columns = raw.columns.get_level_values(0)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'list' object has no attribute 'get_level_values'

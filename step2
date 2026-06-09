@@ -1,3 +1,471 @@
+
+#!/usr/bin/env python3
+"""
+fx_dispersion_step2.py
+======================
+STEP 2 (RESCUE TEST) of the EUR/USD/JPY triangle dispersion pipeline.
+
+The Step 1 NO-GO used ATM-only implied correlation. ATM ignores the smile, and
+the smile steepens in stress -- so the conditional/regime signal we saw could be
+a *measurement artifact* rather than an edge. This script corrects that single
+known measurement error and nothing else: it rebuilds implied correlation from
+the variance-replicating (variance-swap) vol of each pair instead of the ATM vol.
+
+Why this is legitimate and NOT data-mining:
+  - r_cross = r_b1 + r_b2 exactly, so Var-swap strikes obey the same triangle:
+        K_cross = K_b1 + K_b2 + 2 * rho_VR * sqrt(K_b1*K_b2)
+    => rho_VR = (K_cross - K_b1 - K_b2) / (2 sqrt(K_b1*K_b2))
+  - K_x is the model-free fair variance (Carr-Madan replication over the smile),
+    the theoretically correct object that ATM only approximates.
+  - We re-use the IDENTICAL Step 1 gate, regime split and sub-period test, so the
+    comparison is apples-to-apples. The only thing that changed is ATM -> Var-swap.
+
+Pre-registered kill bar (set before looking at the real output):
+  If the VR unconditional spread is |mean| < 0.03 AND HAC |t| < 2 AND sign-unstable
+  across halves  ->  HARD KILL the triangle, reallocate.
+
+Caveats baked into the code (flagged, toggleable), because they affect the level:
+  - Forward deltas (premium adjustment ignored). Matters more for JPY pairs.
+  - Smile-strangle vs market-strangle BF convention (Bloomberg quotes broker BF).
+  - F defaulted to spot (forward drift ignored). Fine for a kill/keep decision at
+    1M/3M; tighten before trusting any GO.
+These do not bias the flat-smile limit, which is the unit test below.
+"""
+
+from __future__ import annotations
+import argparse
+import numpy as np
+import pandas as pd
+
+# Standard-normal CDF (_Phi) and inverse-CDF (_Phi_inv) WITHOUT scipy.stats.
+# Some Bloomberg/conda python environments ship scipy without a working
+# scipy.stats, so we use scipy.special (ndtr/ndtri) and fall back to a pure
+# numpy/stdlib implementation if even that is unavailable. Math is unchanged.
+try:
+    from scipy.special import ndtr as _Phi, ndtri as _Phi_inv          # preferred
+except Exception:                                                       # pragma: no cover
+    from math import erf as _merf
+    _erf = np.vectorize(_merf)
+
+    def _Phi(x):
+        return 0.5 * (1.0 + _erf(np.asarray(x, dtype=float) / np.sqrt(2.0)))
+
+    def _Phi_inv(p):  # Acklam rational approximation, ~1.15e-9 accuracy (scalar use)
+        p = float(p)
+        a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+             1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
+        b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+             6.680131188771972e+01, -1.328068155288572e+01)
+        c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+             -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
+        d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+             3.754408661907416e+00)
+        plow, phigh = 0.02425, 1 - 0.02425
+        if p < plow:
+            q = np.sqrt(-2 * np.log(p))
+            return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+                   ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+        if p <= phigh:
+            q = p - 0.5; r = q * q
+            return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q / \
+                   (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)
+        q = np.sqrt(-2 * np.log(1 - p))
+        return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+                ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+
+# reuse the Step 1 machinery so the test is identical except for rho construction
+from fx_dispersion_step1 import (
+    BASE1, BASE2, CROSS, TENOR_BDAYS, ANNUALIZATION, GATE,
+    forward_realized, hac_mean, evaluate_gate,
+)
+
+import sys, time
+def _log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+PAIRS = [BASE1, BASE2, CROSS]
+SMILE_COLS = ["atm", "rr25", "bf25", "rr10", "bf10", "spot"]
+
+def bbg_smile_tickers(tenor: str) -> dict:
+    tk = {}
+    for p in PAIRS:
+        tk[f"{p}_atm"]  = f"{p}V{tenor} BGN Curncy"
+        tk[f"{p}_rr25"] = f"{p}25R{tenor} BGN Curncy"
+        tk[f"{p}_bf25"] = f"{p}25B{tenor} BGN Curncy"
+        tk[f"{p}_rr10"] = f"{p}10R{tenor} BGN Curncy"
+        tk[f"{p}_bf10"] = f"{p}10B{tenor} BGN Curncy"
+        tk[f"{p}_spot"] = f"{p} Curncy"
+    return tk
+
+# ---------------------------------------------------------------------------
+# Black-76 forward (undiscounted) option prices and the replication engine
+# ---------------------------------------------------------------------------
+def _d1d2(F, K, sig, T):
+    s = sig * np.sqrt(T)
+    d1 = (np.log(F / K) + 0.5 * s * s) / s
+    return d1, d1 - s
+
+def black_call_fwd(F, K, sig, T):
+    d1, d2 = _d1d2(F, K, sig, T)
+    return F * _Phi(d1) - K * _Phi(d2)
+
+def black_put_fwd(F, K, sig, T):
+    d1, d2 = _d1d2(F, K, sig, T)
+    return K * _Phi(-d2) - F * _Phi(-d1)
+
+def fwd_delta_strike(F, sigma, T, delta, is_call):
+    """Strike at a given (unadjusted) forward delta magnitude."""
+    d1 = _Phi_inv(delta) if is_call else _Phi_inv(1.0 - delta)
+    return F * np.exp(0.5 * sigma ** 2 * T - d1 * sigma * np.sqrt(T))
+
+def build_smile_points(F, T, atm, rr25, bf25, rr10=None, bf10=None):
+    """Return (strikes, vols) from FX smile quotes. RR=call-put, BF=0.5(call+put)-atm."""
+    pts = [(F * np.exp(0.5 * atm ** 2 * T), atm)]          # DNS ATM strike
+    quotes = [(rr25, bf25, 0.25)]
+    if rr10 is not None and bf10 is not None and np.isfinite(rr10) and np.isfinite(bf10):
+        quotes.append((rr10, bf10, 0.10))
+    for rr, bf, d in quotes:
+        vc = atm + bf + 0.5 * rr
+        vp = atm + bf - 0.5 * rr
+        pts.append((fwd_delta_strike(F, vc, T, d, True), vc))
+        pts.append((fwd_delta_strike(F, vp, T, d, False), vp))
+    pts.sort()
+    return np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+
+def fair_variance(F, T, Ksmile, Vsmile, n_grid=300, width=7.0):
+    """Carr-Madan / VIX-style model-free fair variance from a smile.
+    Flat-vol wing extrapolation; forward (undiscounted) OTM prices."""
+    sd = float(np.mean(Vsmile)) * np.sqrt(T)
+    if not np.isfinite(sd) or sd <= 0 or not np.isfinite(F) or F <= 0:
+        return np.nan
+    # Additional validation for Ksmile and Vsmile
+    if len(Ksmile) == 0 or len(Vsmile) == 0 or not np.isfinite(Ksmile).all() or not np.isfinite(Vsmile).all():
+        return np.nan
+    grid = np.linspace(F * np.exp(-width * sd), F * np.exp(width * sd), n_grid)
+    # Ensure grid is valid
+    if not np.isfinite(grid).all():
+        return np.nan
+    lm_grid = np.log(grid / F)
+    lm_pts = np.log(Ksmile / F)
+    vol_grid = np.interp(lm_grid, lm_pts, Vsmile)          # flat extrapolation outside wings
+    Q = np.where(grid < F,
+                 black_put_fwd(F, grid, vol_grid, T),
+                 black_call_fwd(F, grid, vol_grid, T))
+    dK = np.gradient(grid)
+    integral = np.sum(Q / grid ** 2 * dK)
+    below = grid[grid <= F]
+    if below.size == 0:
+        return np.nan
+    K0 = below[-1]
+    return (2.0 / T) * integral - (1.0 / T) * (F / K0 - 1.0) ** 2
+
+# ---------------------------------------------------------------------------
+# Data scaling and series construction
+# ---------------------------------------------------------------------------
+def scale_factor(atm_series: pd.Series) -> float:
+    return 100.0 if atm_series.dropna().median() > 1.0 else 1.0
+
+def compute_rho_vr(df: pd.DataFrame, tenor: str, has10: bool, use_forward_col=False):
+    """Variance-replicating implied correlation series + the ATM rho for comparison."""
+    N = TENOR_BDAYS[tenor]
+    T = N / ANNUALIZATION
+    cols = {}
+    for p in PAIRS:
+        sc = scale_factor(df[f"{p}_atm"])
+        cols[p] = dict(
+            atm=df[f"{p}_atm"] / sc, rr25=df[f"{p}_rr25"] / sc, bf25=df[f"{p}_bf25"] / sc,
+            rr10=(df[f"{p}_rr10"] / sc) if has10 else None,
+            bf10=(df[f"{p}_bf10"] / sc) if has10 else None,
+            spot=df[f"{p}_spot"],
+        )
+    idx = df.index
+    rho_vr = np.full(len(idx), np.nan)
+    a1 = cols[BASE1]["atm"].values; a2 = cols[BASE2]["atm"].values; ac = cols[CROSS]["atm"].values
+    rho_atm = (ac ** 2 - a1 ** 2 - a2 ** 2) / (2 * a1 * a2)
+
+    _log(f"  [{tenor}] computing variance-replicating series over {len(idx):,} dates...")
+    t0 = time.time()
+    skipped = 0
+    for i in range(len(idx)):
+        if i and i % 1000 == 0:
+            _log(f"     {i:,}/{len(idx):,}  ({time.time()-t0:.0f}s)")
+        try:
+            K = {}
+            for p in PAIRS:
+                c = cols[p]
+                atm = c["atm"].iat[i]; F = c["spot"].iat[i]
+                rr25 = c["rr25"].iat[i]; bf25 = c["bf25"].iat[i]
+                # require the core ATM+25d smile and spot to be finite for this date
+                if not (np.isfinite(atm) and atm > 0 and np.isfinite(F) and F > 0
+                        and np.isfinite(rr25) and np.isfinite(bf25)):
+                    raise ValueError
+                Ksm, Vsm = build_smile_points(
+                    F, T, atm, rr25, bf25,
+                    c["rr10"].iat[i] if has10 else None,
+                    c["bf10"].iat[i] if has10 else None)
+                k = fair_variance(F, T, Ksm, Vsm)
+                if not np.isfinite(k) or k <= 0:
+                    raise ValueError
+                K[p] = k
+            rho_vr[i] = (K[CROSS] - K[BASE1] - K[BASE2]) / (2 * np.sqrt(K[BASE1] * K[BASE2]))
+        except Exception:
+            skipped += 1
+            continue
+    if skipped:
+        _log(f"  [{tenor}] skipped {skipped:,}/{len(idx):,} dates with non-finite smile inputs")
+    return pd.Series(rho_vr, index=idx, name="rho_vr"), pd.Series(rho_atm, index=idx, name="rho_atm")
+
+# ---------------------------------------------------------------------------
+# Analysis (mirrors Step 1, swapping in rho_vr; also reports the ATM baseline)
+# ---------------------------------------------------------------------------
+def analyze_vr(df, tenor, has10):
+    N = TENOR_BDAYS[tenor]
+    df = df.dropna(subset=[f"{p}_atm" for p in PAIRS] + [f"{p}_spot" for p in PAIRS]).copy()
+    rho_vr, rho_atm = compute_rho_vr(df, tenor, has10)
+    rho_real, rv1, rv2, rvc = forward_realized(df, N)
+    rho_real_tri = (rvc ** 2 - rv1 ** 2 - rv2 ** 2) / (2 * rv1 * rv2)
+
+    P = pd.concat({"rho_vr": rho_vr, "rho_atm": rho_atm, "rho_real": rho_real,
+                   "v1": df[f"{BASE1}_atm"] / scale_factor(df[f"{BASE1}_atm"])}, axis=1).dropna()
+    P["spread_vr"] = P["rho_vr"] - P["rho_real"]
+    P["spread_atm"] = P["rho_atm"] - P["rho_real"]
+
+    oob = ((rho_vr < -1) | (rho_vr > 1)).sum() / max(rho_vr.notna().sum(), 1)
+    m_vr, t_vr, n_vr = hac_mean(P["spread_vr"], maxlags=int(1.5 * N))
+    m_no, t_no, _ = hac_mean(P["spread_vr"].iloc[::N], maxlags=1)
+    m_atm, t_atm, _ = hac_mean(P["spread_atm"], maxlags=int(1.5 * N))
+
+    q = P["v1"].quantile([1/3, 2/3]).values
+    reg = pd.cut(P["v1"], [-np.inf, q[0], q[1], np.inf], labels=["low_vol", "mid_vol", "high_vol"])
+    regime = P.groupby(reg, observed=True)["spread_vr"].mean()
+
+    chunks = np.array_split(P["spread_vr"].values, GATE["n_subperiods"])
+    sub_means = [float(np.nanmean(c)) for c in chunks]
+    sub_consistent = sum(np.sign(m) == np.sign(m_vr) for m in sub_means)
+    recon_err = (P["rho_real"] - rho_real_tri.reindex(P.index)).abs().mean()
+
+    return dict(
+        tenor=tenor, n=len(P),
+        vr_mean=float(rho_vr.mean()), vr_med=float(rho_vr.median()),
+        vr_min=float(rho_vr.min()), vr_max=float(rho_vr.max()),
+        atm_mean_level=float(rho_atm.reindex(P.index).mean()),
+        oob_frac=oob, recon_err=recon_err,
+        mean_overlap=m_vr, t_overlap=t_vr, n_overlap=n_vr,
+        mean_nonoverlap=m_no, t_nonoverlap=t_no,
+        atm_spread=m_atm, atm_t=t_atm,
+        regime=regime.to_dict(), sub_means=sub_means, sub_consistent=sub_consistent,
+    )
+
+def report_vr(r):
+    print(f"\n================  TENOR {r['tenor']}  (VARIANCE-REPLICATING)  ================")
+    print(f"observations (aligned):            {r['n']:,}")
+    print(f"rho_VR    mean/median:             {r['vr_mean']:+.3f} / {r['vr_med']:+.3f}")
+    print(f"rho_VR    min/max:                 {r['vr_min']:+.3f} / {r['vr_max']:+.3f}")
+    print(f"rho_ATM   mean (same sample):      {r['atm_mean_level']:+.3f}")
+    print(f"rho_VR    out-of-bounds fraction:  {r['oob_frac']:.3%}")
+    print(f"recon error |rho_real-rho_tri|:    {r['recon_err']:.4f}")
+    print("-" * 70)
+    print(f"spread comparison (mean / HAC t):")
+    print(f"  ATM baseline (Step 1):           {r['atm_spread']:+.4f} / {r['atm_t']:+.2f}")
+    print(f"  VARIANCE-REPLICATING  overlap:   {r['mean_overlap']:+.4f} / {r['t_overlap']:+.2f}  (n={r['n_overlap']:,})")
+    print(f"  VARIANCE-REPLICATING  non-ovlp:  {r['mean_nonoverlap']:+.4f} / {r['t_nonoverlap']:+.2f}")
+    print("-" * 70)
+    print("regime (mean VR spread by base1-impvol tercile):")
+    for k, v in r["regime"].items():
+        print(f"    {k:<10s} {v:+.4f}")
+    print(f"sub-period sign consistency:       {r['sub_consistent']}/{GATE['n_subperiods']}")
+    print(f"  sub-period means: " + ", ".join(f"{m:+.3f}" for m in r["sub_means"]))
+
+# ---------------------------------------------------------------------------
+# Data sources
+# ---------------------------------------------------------------------------
+def _as_pandas(obj):
+    """Coerce whatever blp.bdh returns (pandas / polars / pyarrow / dict) into a
+    pandas DataFrame with a DatetimeIndex. Polars .columns is a list and polars
+    has no .copy(), which is what broke the earlier pandas-only assumptions."""
+    if not isinstance(obj, pd.DataFrame):
+        if hasattr(obj, "to_pandas"):              # polars / pyarrow Table
+            obj = obj.to_pandas()
+        else:
+            obj = pd.DataFrame(obj)
+    obj = obj.copy()
+    if not isinstance(obj.index, pd.DatetimeIndex):
+        dt = [c for c in obj.columns if str(obj[c].dtype).startswith("datetime")]
+        if not dt:
+            for nm in ("date", "Date", "DATE", "Dates", "index", "Index"):
+                if nm in obj.columns:
+                    dt = [nm]; break
+        if not dt and len(obj.columns):            # last resort: parse first column
+            first = obj.columns[0]
+            try:
+                obj[first] = pd.to_datetime(obj[first]); dt = [first]
+            except Exception:
+                dt = []
+        if dt:
+            obj = obj.set_index(dt[0])
+    return obj
+
+
+def fetch_bloomberg(tenor, start, end, has10):
+    """Robust to xbbg returning pandas OR polars/pyarrow, and to any column
+    structure (MultiIndex, flat Index, plain list). Batched pull first; if the
+    column mapping fails, fall back to per-ticker pulls."""
+    from xbbg import blp
+    tk = bbg_smile_tickers(tenor)
+    if not has10:
+        tk = {k: v for k, v in tk.items() if "10" not in k.split("_")[1]}
+    inv = {v: k for k, v in tk.items()}
+
+    def _flatten(cols):                            # list / Index / MultiIndex -> list
+        return [c[0] if isinstance(c, tuple) else c for c in list(cols)]
+
+    # --- primary: one batched pull ---
+    try:
+        raw0 = blp.bdh(list(tk.values()), "PX_LAST", start, end)
+        _log(f"   blp.bdh returned {type(raw0).__module__}.{type(raw0).__name__}")
+        raw = _as_pandas(raw0)
+        raw.columns = _flatten(raw.columns)
+        raw = raw.rename(columns=inv)
+        keep = [k for k in tk if k in raw.columns]
+        if len(keep) >= max(6, len(tk) // 2):
+            _log(f"   batched pull mapped {len(keep)}/{len(tk)} columns")
+            return raw[keep].apply(pd.to_numeric, errors="coerce")
+        _log(f"   batched mapped only {len(keep)}/{len(tk)}; per-ticker fallback. "
+             f"cols: {list(raw.columns)[:6]}")
+    except Exception as e:
+        _log(f"   batched pull failed ({e!r}); per-ticker fallback.")
+
+    # --- fallback: pull each ticker individually (immune to shape) ---
+    series = {}
+    for name, ticker in tk.items():
+        s = _as_pandas(blp.bdh(ticker, "PX_LAST", start, end))
+        val = None
+        for c in s.columns:                        # first column that is actually numeric
+            col = pd.to_numeric(s[c], errors="coerce")
+            if col.notna().any():
+                val = col; break
+        series[name] = val if val is not None else pd.Series(dtype=float)
+        _log(f"   pulled {name:<12s} ({ticker}): {int(series[name].notna().sum())} obs")
+    return pd.DataFrame(series).sort_index()
+
+def load_csv(path):
+    return pd.read_csv(path, index_col=0, parse_dates=True).sort_index()
+
+def make_demo_smile(n_years=12, seed=11, convex=True, inject_spread=-0.10):
+    """Triangle spots with an injected ATM correlation premium, plus skew/convexity
+    smiles. With convex=False (flat smile) VR must reproduce the ATM result."""
+    rng = np.random.default_rng(seed)
+    n = int(n_years * ANNUALIZATION)
+    idx = pd.bdate_range("2010-01-01", periods=n)
+    rho_real = -0.30 + 0.15 * np.sin(np.linspace(0, 6 * np.pi, n))
+    base_vol = 0.09 + 0.04 * np.abs(np.sin(np.linspace(0, 3 * np.pi, n)))
+    r1 = np.empty(n); r2 = np.empty(n)
+    for t in range(n):
+        s = base_vol[t] / np.sqrt(ANNUALIZATION)
+        cov = np.array([[s * s, rho_real[t] * s * s], [rho_real[t] * s * s, s * s]])
+        r1[t], r2[t] = rng.multivariate_normal([0, 0], cov)
+    p1 = 1.30 * np.exp(np.cumsum(r1)); p2 = 110.0 * np.exp(np.cumsum(r2)); pc = p1 * p2
+    a1 = base_vol + 0.005; a2 = base_vol + 0.005
+    rho_imp = np.clip(rho_real + inject_spread, -0.999, 0.999)
+    ac = np.sqrt(a1 ** 2 + a2 ** 2 + 2 * rho_imp * a1 * a2)
+    out = {}
+    skew = {BASE1: -0.4, BASE2: -0.8, CROSS: -1.2} if convex else {p: 0.0 for p in PAIRS}
+    conv = {BASE1: 0.2, BASE2: 0.3, CROSS: 0.4} if convex else {p: 0.0 for p in PAIRS}
+    for p, atm, spot in [(BASE1, a1, p1), (BASE2, a2, p2), (CROSS, ac, pc)]:
+        out[f"{p}_atm"] = atm * 100
+        out[f"{p}_rr25"] = np.full(n, skew[p]); out[f"{p}_bf25"] = np.full(n, conv[p])
+        out[f"{p}_rr10"] = np.full(n, 1.8 * skew[p]); out[f"{p}_bf10"] = np.full(n, 3.0 * conv[p])
+        out[f"{p}_spot"] = spot
+    return pd.DataFrame(out, index=idx)
+
+# ---------------------------------------------------------------------------
+# Unit tests (run with --selftest)
+# ---------------------------------------------------------------------------
+def selftest():
+    F, T = 1.10, 21 / ANNUALIZATION
+    atm = 0.09
+    Kf, Vf = build_smile_points(F, T, atm, 0.0, 0.0, 0.0, 0.0)          # flat
+    vf = np.sqrt(fair_variance(F, T, Kf, Vf))
+    assert abs(vf - atm) < 1.5e-3, f"flat smile: VS vol {vf:.5f} != atm {atm}"
+    Kc, Vc = build_smile_points(F, T, atm, -0.004, 0.003, -0.007, 0.009)  # skew+convex
+    vc = np.sqrt(fair_variance(F, T, Kc, Vc))
+    assert vc > atm + 5e-4, f"convex smile: VS vol {vc:.5f} not > atm"
+    # flat-smile triangle: VR rho must equal ATM rho
+    a1, a2, rho = 0.09, 0.11, -0.35
+    ac = np.sqrt(a1 ** 2 + a2 ** 2 + 2 * rho * a1 * a2)
+    K = {}
+    for nm, a, Fp in [("b1", a1, 1.10), ("b2", a2, 110.0), ("c", ac, 121.0)]:
+        Ks, Vs = build_smile_points(Fp, T, a, 0.0, 0.0, 0.0, 0.0)
+        K[nm] = fair_variance(Fp, T, Ks, Vs)
+    rho_vr = (K["c"] - K["b1"] - K["b2"]) / (2 * np.sqrt(K["b1"] * K["b2"]))
+    assert abs(rho_vr - rho) < 3e-3, f"flat triangle: VR rho {rho_vr:+.4f} != ATM rho {rho:+.4f}"
+    print("SELFTEST PASSED")
+    print(f"  flat-smile VS vol      = {vf:.5f}  (atm {atm})")
+    print(f"  convex-smile VS vol    = {vc:.5f}  (> atm, convexity lifts variance)")
+    print(f"  flat-triangle VR rho   = {rho_vr:+.4f}  (target {rho:+.4f})")
+
+def main():
+    ap = argparse.ArgumentParser(description="Step 2 rescue — variance-replicating implied correlation")
+    ap.add_argument("--source", choices=["bloomberg", "csv", "demo"], default="demo")
+    ap.add_argument("--tenors", default="1M,3M")
+    ap.add_argument("--start", default="2007-01-01")
+    ap.add_argument("--end", default="2025-01-01")
+    ap.add_argument("--csv", default=None)
+    ap.add_argument("--no-10delta", action="store_true", help="use only ATM + 25-delta smile")
+    ap.add_argument("--demo-smile", choices=["flat", "convex"], default="convex")
+    ap.add_argument("--selftest", action="store_true")
+    args = ap.parse_args()
+    if args.selftest:
+        selftest(); return
+
+    has10 = not args.no_10delta
+    results = []
+    for tenor in [t.strip() for t in args.tenors.split(",") if t.strip()]:
+        if args.source == "bloomberg":
+            _log(f"[{tenor}] pulling Bloomberg ({'ATM+25d+10d' if has10 else 'ATM+25d'}) "
+                 f"{args.start} -> {args.end} ...")
+            df = fetch_bloomberg(tenor, args.start, args.end, has10)
+            _log(f"[{tenor}] pulled shape={df.shape}; dates "
+                 f"{df.index.min()} -> {df.index.max()}")
+            if df.dropna(how="all").empty:
+                raise SystemExit(f"[{tenor}] Bloomberg returned NO data. Check the Terminal/"
+                                 f"blpapi session and tickers (run the standalone bdh test).")
+        elif args.source == "csv":
+            if not args.csv:
+                raise SystemExit("--csv required with --source csv")
+            df = load_csv(args.csv)
+        else:
+            df = make_demo_smile(convex=(args.demo_smile == "convex"))
+        _log(f"[{tenor}] analyzing...")
+        results.append(analyze_vr(df, tenor, has10))
+
+    for r in results:
+        report_vr(r)
+
+    go, notes = evaluate_gate(results)
+    print("\n" + "=" * 70)
+    print(f"GATE (same thresholds as Step 1):  {'>>> GO <<<' if go else '>>> NO-GO <<<'}")
+    print(f"PRE-REGISTERED KILL BAR: kill if every tenor has |VR mean|<0.03, |t|<2, "
+          f"sign-unstable.")
+    killed = all(abs(r["mean_overlap"]) < 0.03 and abs(r["t_overlap"]) < 2.0
+                 and r["sub_consistent"] <= 2 for r in results)
+    print(f"  -> {'HARD KILL the triangle, reallocate to event vol.' if killed else 'NOT auto-killed; inspect VR vs ATM delta and regime split.'}")
+    if notes:
+        print("Flags:")
+        for n in notes:
+            print("  - " + n)
+    print("=" * 70)
+    print("\nThe number that matters: does VR move the spread/t materially vs the ATM\n"
+          "baseline printed above? If ATM and VR agree (both ~0, both unstable), the\n"
+          "smile was not hiding anything -> kill. If VR diverges strongly, tighten the\n"
+          "delta/strangle/forward conventions before trusting it.")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
 [1M] pulling Bloomberg (ATM+25d+10d) 2007-01-01 -> 2025-01-01 ...
    blp.bdh returned narwhals.stable.v1.DataFrame
    batched mapped only 0/18; per-ticker fallback. cols: ['ticker', 'field', 'value']
@@ -22,19 +490,96 @@
 [1M] pulled shape=(4698, 18); dates 2007-01-01 -> 2025-01-01
 [1M] analyzing...
   [1M] computing variance-replicating series over 4,697 dates...
-Traceback (most recent call last):
-  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 447, in <module>
-    main()
-  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 422, in main
-    results.append(analyze_vr(df, tenor, has10))
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 203, in analyze_vr
-    rho_vr, rho_atm = compute_rho_vr(df, tenor, has10)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 191, in compute_rho_vr
-    K[p] = fair_variance(F, T, Ksm, Vsm)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 147, in fair_variance
-    K0 = grid[grid <= F][-1]
-         ~~~~~~~~~~~~~~~^^^^
-IndexError: index -1 is out of bounds for axis 0 with size 0
+     1,000/4,697  (0s)
+     2,000/4,697  (1s)
+     3,000/4,697  (1s)
+     4,000/4,697  (1s)
+  [1M] skipped 6/4,697 dates with non-finite smile inputs
+[3M] pulling Bloomberg (ATM+25d+10d) 2007-01-01 -> 2025-01-01 ...
+   blp.bdh returned narwhals.stable.v1.DataFrame
+   batched mapped only 0/18; per-ticker fallback. cols: ['ticker', 'field', 'value']
+   pulled EURUSD_atm   (EURUSDV3M BGN Curncy): 4698 obs
+   pulled EURUSD_rr25  (EURUSD25R3M BGN Curncy): 4688 obs
+   pulled EURUSD_bf25  (EURUSD25B3M BGN Curncy): 4698 obs
+   pulled EURUSD_rr10  (EURUSD10R3M BGN Curncy): 4692 obs
+   pulled EURUSD_bf10  (EURUSD10B3M BGN Curncy): 4698 obs
+   pulled EURUSD_spot  (EURUSD Curncy): 4698 obs
+   pulled USDJPY_atm   (USDJPYV3M BGN Curncy): 4698 obs
+   pulled USDJPY_rr25  (USDJPY25R3M BGN Curncy): 4698 obs
+   pulled USDJPY_bf25  (USDJPY25B3M BGN Curncy): 4698 obs
+   pulled USDJPY_rr10  (USDJPY10R3M BGN Curncy): 4698 obs
+   pulled USDJPY_bf10  (USDJPY10B3M BGN Curncy): 4698 obs
+   pulled USDJPY_spot  (USDJPY Curncy): 4698 obs
+   pulled EURJPY_atm   (EURJPYV3M BGN Curncy): 4698 obs
+   pulled EURJPY_rr25  (EURJPY25R3M BGN Curncy): 4697 obs
+   pulled EURJPY_bf25  (EURJPY25B3M BGN Curncy): 4697 obs
+   pulled EURJPY_rr10  (EURJPY10R3M BGN Curncy): 4697 obs
+   pulled EURJPY_bf10  (EURJPY10B3M BGN Curncy): 4697 obs
+   pulled EURJPY_spot  (EURJPY Curncy): 4697 obs
+[3M] pulled shape=(4698, 18); dates 2007-01-01 -> 2025-01-01
+[3M] analyzing...
+  [3M] computing variance-replicating series over 4,697 dates...
+     1,000/4,697  (0s)
+     2,000/4,697  (1s)
+     3,000/4,697  (1s)
+     4,000/4,697  (1s)
+  [3M] skipped 11/4,697 dates with non-finite smile inputs
+
+================  TENOR 1M  (VARIANCE-REPLICATING)  ================
+observations (aligned):            4,670
+rho_VR    mean/median:             -0.339 / -0.369
+rho_VR    min/max:                 -0.698 / +0.312
+rho_ATM   mean (same sample):      -0.346
+rho_VR    out-of-bounds fraction:  0.000%
+recon error |rho_real-rho_tri|:    0.0112
+----------------------------------------------------------------------
+spread comparison (mean / HAC t):
+  ATM baseline (Step 1):           -0.0122 / -0.77
+  VARIANCE-REPLICATING  overlap:   -0.0051 / -0.32  (n=4,670)
+  VARIANCE-REPLICATING  non-ovlp:  -0.0028 / -0.16
+----------------------------------------------------------------------
+regime (mean VR spread by base1-impvol tercile):
+    low_vol    -0.0046
+    mid_vol    +0.0125
+    high_vol   -0.0233
+sub-period sign consistency:       2/5
+  sub-period means: -0.086, -0.051, +0.077, +0.011, +0.023
+
+================  TENOR 3M  (VARIANCE-REPLICATING)  ================
+observations (aligned):            4,623
+rho_VR    mean/median:             -0.322 / -0.347
+rho_VR    min/max:                 -0.642 / +0.216
+rho_ATM   mean (same sample):      -0.333
+rho_VR    out-of-bounds fraction:  0.000%
+recon error |rho_real-rho_tri|:    0.0067
+----------------------------------------------------------------------
+spread comparison (mean / HAC t):
+  ATM baseline (Step 1):           -0.0044 / -0.19
+  VARIANCE-REPLICATING  overlap:   +0.0075 / +0.32  (n=4,623)
+  VARIANCE-REPLICATING  non-ovlp:  -0.0025 / -0.09
+----------------------------------------------------------------------
+regime (mean VR spread by base1-impvol tercile):
+    low_vol    +0.0217
+    mid_vol    +0.0233
+    high_vol   -0.0227
+sub-period sign consistency:       3/5
+  sub-period means: -0.122, -0.035, +0.101, +0.034, +0.060
+
+======================================================================
+GATE (same thresholds as Step 1):  >>> NO-GO <<<
+PRE-REGISTERED KILL BAR: kill if every tenor has |VR mean|<0.03, |t|<2, sign-unstable.
+  -> NOT auto-killed; inspect VR vs ATM delta and regime split.
+Flags:
+  - [1M] |mean spread| 0.005 < 0.05.
+  - [1M] HAC |t| 0.32 < 3.0.
+  - [1M] sign consistent in only 2/5 sub-periods.
+  - [3M] |mean spread| 0.007 < 0.05.
+  - [3M] HAC |t| 0.32 < 3.0.
+  - [3M] sign consistent in only 3/5 sub-periods.
+  - Spread sign FLIPS across tenors -> not a stable premium.
+======================================================================
+
+The number that matters: does VR move the spread/t materially vs the ATM
+baseline printed above? If ATM and VR agree (both ~0, both unstable), the
+smile was not hiding anything -> kill. If VR diverges strongly, tighten the
+delta/strangle/forward conventions before trusting it.

@@ -1,103 +1,40 @@
-
-[1M] pulling Bloomberg (ATM+25d+10d) 2023-01-01 -> 2025-01-01 ...
+[1M] pulling Bloomberg (ATM+25d+10d) 2007-01-01 -> 2025-01-01 ...
    blp.bdh returned narwhals.stable.v1.DataFrame
    batched mapped only 0/18; per-ticker fallback. cols: ['ticker', 'field', 'value']
-   pulled EURUSD_atm   (EURUSDV1M BGN Curncy): 523 obs
-   pulled EURUSD_rr25  (EURUSD25R1M BGN Curncy): 523 obs
-   pulled EURUSD_bf25  (EURUSD25B1M BGN Curncy): 523 obs
-   pulled EURUSD_rr10  (EURUSD10R1M BGN Curncy): 523 obs
-   pulled EURUSD_bf10  (EURUSD10B1M BGN Curncy): 523 obs
-   pulled EURUSD_spot  (EURUSD Curncy): 523 obs
-   pulled USDJPY_atm   (USDJPYV1M BGN Curncy): 523 obs
-   pulled USDJPY_rr25  (USDJPY25R1M BGN Curncy): 523 obs
-   pulled USDJPY_bf25  (USDJPY25B1M BGN Curncy): 523 obs
-   pulled USDJPY_rr10  (USDJPY10R1M BGN Curncy): 523 obs
-   pulled USDJPY_bf10  (USDJPY10B1M BGN Curncy): 523 obs
-   pulled USDJPY_spot  (USDJPY Curncy): 523 obs
-   pulled EURJPY_atm   (EURJPYV1M BGN Curncy): 523 obs
-   pulled EURJPY_rr25  (EURJPY25R1M BGN Curncy): 523 obs
-   pulled EURJPY_bf25  (EURJPY25B1M BGN Curncy): 523 obs
-   pulled EURJPY_rr10  (EURJPY10R1M BGN Curncy): 523 obs
-   pulled EURJPY_bf10  (EURJPY10B1M BGN Curncy): 523 obs
-   pulled EURJPY_spot  (EURJPY Curncy): 522 obs
-[1M] pulled shape=(523, 18); dates 2023-01-02 -> 2025-01-01
+   pulled EURUSD_atm   (EURUSDV1M BGN Curncy): 4698 obs
+   pulled EURUSD_rr25  (EURUSD25R1M BGN Curncy): 4693 obs
+   pulled EURUSD_bf25  (EURUSD25B1M BGN Curncy): 4698 obs
+   pulled EURUSD_rr10  (EURUSD10R1M BGN Curncy): 4696 obs
+   pulled EURUSD_bf10  (EURUSD10B1M BGN Curncy): 4698 obs
+   pulled EURUSD_spot  (EURUSD Curncy): 4698 obs
+   pulled USDJPY_atm   (USDJPYV1M BGN Curncy): 4698 obs
+   pulled USDJPY_rr25  (USDJPY25R1M BGN Curncy): 4698 obs
+   pulled USDJPY_bf25  (USDJPY25B1M BGN Curncy): 4698 obs
+   pulled USDJPY_rr10  (USDJPY10R1M BGN Curncy): 4698 obs
+   pulled USDJPY_bf10  (USDJPY10B1M BGN Curncy): 4698 obs
+   pulled USDJPY_spot  (USDJPY Curncy): 4698 obs
+   pulled EURJPY_atm   (EURJPYV1M BGN Curncy): 4698 obs
+   pulled EURJPY_rr25  (EURJPY25R1M BGN Curncy): 4697 obs
+   pulled EURJPY_bf25  (EURJPY25B1M BGN Curncy): 4697 obs
+   pulled EURJPY_rr10  (EURJPY10R1M BGN Curncy): 4697 obs
+   pulled EURJPY_bf10  (EURJPY10B1M BGN Curncy): 4697 obs
+   pulled EURJPY_spot  (EURJPY Curncy): 4697 obs
+[1M] pulled shape=(4698, 18); dates 2007-01-01 -> 2025-01-01
 [1M] analyzing...
-  [1M] computing variance-replicating series over 522 dates...
-[3M] pulling Bloomberg (ATM+25d+10d) 2023-01-01 -> 2025-01-01 ...
-   blp.bdh returned narwhals.stable.v1.DataFrame
-   batched mapped only 0/18; per-ticker fallback. cols: ['ticker', 'field', 'value']
-   pulled EURUSD_atm   (EURUSDV3M BGN Curncy): 523 obs
-   pulled EURUSD_rr25  (EURUSD25R3M BGN Curncy): 523 obs
-   pulled EURUSD_bf25  (EURUSD25B3M BGN Curncy): 523 obs
-   pulled EURUSD_rr10  (EURUSD10R3M BGN Curncy): 523 obs
-   pulled EURUSD_bf10  (EURUSD10B3M BGN Curncy): 523 obs
-   pulled EURUSD_spot  (EURUSD Curncy): 523 obs
-   pulled USDJPY_atm   (USDJPYV3M BGN Curncy): 523 obs
-   pulled USDJPY_rr25  (USDJPY25R3M BGN Curncy): 523 obs
-   pulled USDJPY_bf25  (USDJPY25B3M BGN Curncy): 523 obs
-   pulled USDJPY_rr10  (USDJPY10R3M BGN Curncy): 523 obs
-   pulled USDJPY_bf10  (USDJPY10B3M BGN Curncy): 523 obs
-   pulled USDJPY_spot  (USDJPY Curncy): 523 obs
-   pulled EURJPY_atm   (EURJPYV3M BGN Curncy): 523 obs
-   pulled EURJPY_rr25  (EURJPY25R3M BGN Curncy): 523 obs
-   pulled EURJPY_bf25  (EURJPY25B3M BGN Curncy): 523 obs
-   pulled EURJPY_rr10  (EURJPY10R3M BGN Curncy): 523 obs
-   pulled EURJPY_bf10  (EURJPY10B3M BGN Curncy): 523 obs
-   pulled EURJPY_spot  (EURJPY Curncy): 522 obs
-[3M] pulled shape=(523, 18); dates 2023-01-02 -> 2025-01-01
-[3M] analyzing...
-  [3M] computing variance-replicating series over 522 dates...
-
-================  TENOR 1M  (VARIANCE-REPLICATING)  ================
-observations (aligned):            501
-rho_VR    mean/median:             -0.418 / -0.417
-rho_VR    min/max:                 -0.614 / -0.163
-rho_ATM   mean (same sample):      -0.427
-rho_VR    out-of-bounds fraction:  0.000%
-recon error |rho_real-rho_tri|:    0.0109
-----------------------------------------------------------------------
-spread comparison (mean / HAC t):
-  ATM baseline (Step 1):           +0.0387 / +1.35
-  VARIANCE-REPLICATING  overlap:   +0.0456 / +1.59  (n=501)
-  VARIANCE-REPLICATING  non-ovlp:  +0.0671 / +1.92
-----------------------------------------------------------------------
-regime (mean VR spread by base1-impvol tercile):
-    low_vol    +0.0595
-    mid_vol    +0.0147
-    high_vol   +0.0626
-sub-period sign consistency:       4/5
-  sub-period means: +0.042, -0.058, +0.044, +0.130, +0.070
-
-================  TENOR 3M  (VARIANCE-REPLICATING)  ================
-observations (aligned):            459
-rho_VR    mean/median:             -0.382 / -0.379
-rho_VR    min/max:                 -0.488 / -0.281
-rho_ATM   mean (same sample):      -0.391
-rho_VR    out-of-bounds fraction:  0.000%
-recon error |rho_real-rho_tri|:    0.0064
-----------------------------------------------------------------------
-spread comparison (mean / HAC t):
-  ATM baseline (Step 1):           +0.0732 / +3.65
-  VARIANCE-REPLICATING  overlap:   +0.0842 / +4.18  (n=459)
-  VARIANCE-REPLICATING  non-ovlp:  +0.0968 / +4.83
-----------------------------------------------------------------------
-regime (mean VR spread by base1-impvol tercile):
-    low_vol    +0.1149
-    mid_vol    +0.0514
-    high_vol   +0.0864
-sub-period sign consistency:       5/5
-  sub-period means: +0.072, +0.015, +0.083, +0.111, +0.142
-
-======================================================================
-GATE (same thresholds as Step 1):  >>> NO-GO <<<
-PRE-REGISTERED KILL BAR: kill if every tenor has |VR mean|<0.03, |t|<2, sign-unstable.
-  -> NOT auto-killed; inspect VR vs ATM delta and regime split.
-Flags:
-  - [1M] |mean spread| 0.046 < 0.05.
-  - [1M] HAC |t| 1.59 < 3.0.
-======================================================================
-
-The number that matters: does VR move the spread/t materially vs the ATM
-baseline printed above? If ATM and VR agree (both ~0, both unstable), the
-smile was not hiding anything -> kill. If VR diverges strongly, tighten the
-delta/strangle/forward conventions before trusting it.
+  [1M] computing variance-replicating series over 4,697 dates...
+Traceback (most recent call last):
+  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 447, in <module>
+    main()
+  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 422, in main
+    results.append(analyze_vr(df, tenor, has10))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 203, in analyze_vr
+    rho_vr, rho_atm = compute_rho_vr(df, tenor, has10)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 191, in compute_rho_vr
+    K[p] = fair_variance(F, T, Ksm, Vsm)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "\\srvfilesgva02\users$\xrv\FX Trading Project\fx_dispersion_step2.py", line 147, in fair_variance
+    K0 = grid[grid <= F][-1]
+         ~~~~~~~~~~~~~~~^^^^
+IndexError: index -1 is out of bounds for axis 0 with size 0
